@@ -1,0 +1,58 @@
+Dockerize spooder OSC web application
+on: 
+  release:
+    types:
+      - created
+jobs:
+  build_and_publish_release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      
+      - uses: actions/cache@v2
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+            
+      - name: Run npm install & build
+        run: |
+          npm install
+          npm run build
+          
+      - name: Set App version
+        env:
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          export APP_VERSION=$(echo $GITHUB_REF | grep -oP '(?<=refs\/tags\/).*')
+          sed -i -e '/APP_VERSION=/s/=.*/='$APP_VERSION'/' .env
+          
+      - name: Cleaning unnecessary files
+        run: |
+          rm -rf node_modules/ .git/ .github/ assets/
+          ls -la
+          
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+        
+      - name: Login to DockerHub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+          
+      - name: Build & Push
+        id: build_and_push
+        uses: docker/build-push-action@v2
+        with:
+          push: true
+          context: .
+          file: ./docker/Dockerfile
+          tags: valnar012/spooder:latest
+          build-args: |
+            APP_KEY_CRYPT_DECRYPT=${{ secrets.APP_KEY_CRYPT_DECRYPT }}
+            APP_KEY_RECAPTCHA_V2_SECRET=${{ secrets.APP_KEY_RECAPTCHA_V2_SECRET }}

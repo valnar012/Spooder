@@ -7,13 +7,13 @@ services:
   app:
     build:
       context: docker/
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     ports:
       - "3000:3000"
     networks:
       - app
     volumes:
-      - ./:/app:delegated
+      - ./:/app
   ngrock:
     image: ngrok/ngrok:latest
     ports:

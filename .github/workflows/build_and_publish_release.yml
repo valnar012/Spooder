@@ -52,7 +52,7 @@ jobs:
           push: true
           context: .
           file: ./docker/Dockerfile
-          tags: valnar012/spooder:latest
+          tags:  ${{ secrets.DOCKER_USERNAME }}/spooder:latest
           build-args: |
             APP_KEY_CRYPT_DECRYPT=${{ secrets.APP_KEY_CRYPT_DECRYPT }}
             APP_KEY_RECAPTCHA_V2_SECRET=${{ secrets.APP_KEY_RECAPTCHA_V2_SECRET }}

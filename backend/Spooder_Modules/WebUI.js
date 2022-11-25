@@ -51,7 +51,9 @@ class WebUI {
         router.use("/overlay", express.static(backendDir+'/web/overlay'));
         router.use("/mod", express.static(backendDir+'/web/mod/build'));
         router.use("/utility", express.static(backendDir+'/web/utility'));
+        router.use("/settings", express.static(backendDir+'/web/settings'));
         router.get("/overlay/get", async(req, res) => {
+
             let isExternal = req.query.external;
             
             var pluginName = req.query.plugin;
@@ -66,7 +68,7 @@ class WebUI {
             
             let oscInfo = null;
 
-            if(isExternal == true){
+            if(isExternal == "true"){
                 oscInfo = {
                     host: sconfig.network.external_tcp_url,
                     port: null,
@@ -91,8 +93,9 @@ class WebUI {
         router.use(bodyParser.json());
         router.use("/install_plugin",fileUpload());
         router.use("/upload_plugin_asset/*",fileUpload());
+        router.use("/checkin_settings", fileUpload());
+        router.use("/checkin_plugins", fileUpload());
         router.use(express.json({verify: this.verifyTwitchSignature}));
-        //router.use(express.static("/plugin/*", ReactDomServer));
 
         router.get('/handle', async (req,res)=>{
             console.log("Got code");
@@ -160,8 +163,6 @@ class WebUI {
                 }
             })
             .then((response)=>{
-                
-                console.log(response);
 
                 if(oauth.broadcaster_token == token){
                     oauth.broadcaster_token = "";
@@ -219,7 +220,13 @@ class WebUI {
         });
 
         router.get('/server_config', (req, res) => {
-            res.send({express: JSON.stringify(sconfig)});
+            let backupSettingsDir = path.join(backendDir, "backup", "settings");
+            let backupPluginsDir = path.join(backendDir, "backup", "plugins");
+            let backups = {
+                settings:fs.existsSync(backupSettingsDir)?fs.readdirSync(backupSettingsDir):{},
+                plugins:fs.existsSync(backupPluginsDir)?fs.readdirSync(backupPluginsDir):{}
+            }
+            res.send({express: JSON.stringify({config:sconfig, backup:backups})});
         });
 
         router.get('/udp_hosts', (req, res) => {
@@ -312,6 +319,8 @@ class WebUI {
                     let tempDir = path.join(backendDir, "tmp", pluginDirName);
                     let pluginDir = path.join(backendDir,"plugins", pluginDirName);
                     let overlayDir = path.join(backendDir,"web", "overlay", pluginDirName);
+                    let utilityDir = path.join(backendDir, "web", "utility", pluginDirName);
+                    let settingsDir = path.join(backendDir, "web", "settings", pluginDirName);
                     //Cleanup before install
                     if(fs.existsSync(tempFile)){
                         await fs.rm(tempFile);
@@ -352,6 +361,15 @@ class WebUI {
                             
                         });
                     }
+
+                    if(fs.existsSync(tempDir+"/settings")){
+                        await fs.move(tempDir+"/settings", settingsDir, {overwrite:true});
+
+                        chmodr(overlayDir,0o777, (err) => {
+                            if(err) throw err;
+                            
+                        });
+                    }
                     
                     console.log("COMPLETE!");
                     fs.rm(tempFile);
@@ -376,7 +394,7 @@ class WebUI {
             let pluginDir = path.join(backendDir,"plugins", pluginName);
             let overlayDir = path.join(backendDir, "web", "overlay", pluginName);
             let utilityDir = path.join(backendDir, "web", "utility", pluginName);
-
+            let settingsDir = path.join(backendDir, "web", "settings", pluginName);
             if(fs.existsSync(pluginDir)){
                 fs.copySync(pluginDir, tempDir+"/command");
             }
@@ -405,6 +423,10 @@ class WebUI {
             if(fs.existsSync(tempDir+"/utility")){
                 zip.addLocalFolder(tempDir+"/utility", "/utility");
             }
+
+            if(fs.existsSync(tempDir+"/settings")){
+                zip.addLocalFolder(tempDir+"/settings", "/settings");
+            }
             
             zip.writeZip(tempDir+"/"+pluginName+".zip");
 
@@ -412,7 +434,276 @@ class WebUI {
             res.download(tempDir+"/"+pluginName+".zip");
 
             fs.rm(tempDir, {recursive:true});
+        });
+
+        router.get("/checkout_settings/*", async (req, res) => {
+            let backupName = req.params['0'];
+            console.log("DOWNLOADING SETTINGS", path.join(backendDir, "backup", "settings", backupName));
+            res.setHeader("Content-disposition", backupName);
+            res.download(path.join(backendDir, "backup", "settings", backupName));
+        });
+
+        router.get("/checkout_plugins/*", async (req, res) => {
+            let backupName = req.params['0'];
+            console.log("DOWNLOADING PLUGINS", path.join(backendDir, "backup", "settings", backupName));
+            res.setHeader("Content-disposition", backupName);
+            res.download(path.join(backendDir, "backup", "plugins", backupName));
         })
+
+        router.post("/checkin_settings", (req, res) => {
+            if(!req.files){
+                console.log("NO FILES FOUND");
+                res.send({
+                    status: false,
+                    message: 'No file uploaded'
+                })
+            }else{
+                req.files.file.mv(path.join(backendDir, "backup", "settings", req.files.file.name));
+                let newSettingsBackups = fs.readdirSync(path.join(backendDir, "backup", "settings"));
+                console.log(newSettingsBackups);
+                res.send({newbackups:newSettingsBackups});
+            }
+        })
+
+        router.post("/checkin_plugins", (req, res) => {
+            if(!req.files){
+                console.log("NO FILES FOUND");
+                res.send({
+                    status: false,
+                    message: 'No file uploaded'
+                })
+            }else{
+                req.files.file.mv(path.join(backendDir, "backup", "plugins", req.files.file.name));
+                let newSettingsBackups = fs.readdirSync(path.join(backendDir, "backup", "plugins"));
+                console.log(newSettingsBackups);
+                res.send({newbackups:newSettingsBackups});
+            }
+        })
+
+        router.post("/backup_settings", async(req, res)=>{
+            let zip = new AdmZip();
+            
+            zip.addLocalFolder(backendDir+"/settings", "");
+
+            if(!fs.existsSync(backendDir+"/backup")){
+                fs.mkdirSync(backendDir+"/backup");
+            }
+
+            if(!fs.existsSync(backendDir+"/backup/settings")){
+                fs.mkdirSync(backendDir+"/backup/settings");
+            }
+            
+            let backupName = null;
+            if(req.body.backupName != null && req.body.backupName != ''){
+                backupName = req.body.backupName;
+            }else{
+                let date = new Date();
+                backupName = date.getFullYear()+"-"+date.getMonth()+"-"+date.getDate()+"-"+date.getHours()+"-"+date.getMinutes()+"-"+date.getSeconds();
+            }
+            zip.writeZip(backendDir+"/backup/settings/"+backupName+".zip",(e)=>{
+                if(e){
+                    throw new Error(e.message);
+                }
+                let newSettingsBackups = fs.readdirSync(path.join(backendDir, "backup", "settings"));
+                console.log(newSettingsBackups);
+                res.send({newbackups:newSettingsBackups});
+                console.log("BACKUP COMPLETE");
+            });
+        });
+
+        router.post("/backup_plugins", async(req, res)=>{
+            let zip = new AdmZip();
+
+            zip.addLocalFolder(backendDir+"/plugins", "/plugins");
+            zip.addLocalFolder(backendDir+"/web", "/web");
+
+            if(!fs.existsSync(backendDir+"/backup")){
+                fs.mkdirSync(backendDir+"/backup");
+            }
+
+            if(!fs.existsSync(backendDir+"/backup/plugins")){
+                fs.mkdirSync(backendDir+"/backup/plugins");
+            }
+            let backupName = null;
+            if(req.body.backupName != null && req.body.backupName != ''){
+                backupName = req.body.backupName;
+            }else{
+                let date = new Date();
+                backupName = date.getFullYear()+"-"+date.getMonth()+"-"+date.getDate()+"-"+date.getHours()+"-"+date.getMinutes()+"-"+date.getSeconds();
+            }
+            console.log("Writing backup. This can take a while depending on how many plugins you have. I wish I could show you progress...");
+            
+            zip.writeZip(backendDir+"/backup/plugins/"+backupName+".zip", (e)=>{
+                if(e){
+                    throw new Error(e.message);
+                }
+                let newPluginBackups = fs.readdirSync(path.join(backendDir, "backup", "plugins"));
+                res.send({newbackups:newPluginBackups});
+                console.log("BACKUP COMPLETE");
+            });
+        });
+
+        router.post("/delete_backup_settings", (req, res) => {
+            let backupName = req.body.backupName;
+            let backupDir = path.join(backendDir, "backup", "settings");
+            let fullPath = path.join(backupDir, backupName);
+
+            if(fs.existsSync(fullPath)){
+                fs.rmSync(fullPath);
+                let newPluginBackups = fs.readdirSync(path.join(backendDir, "backup", "settings"));
+                console.log("BACKUP DELETED: "+backupName);
+                res.send({status:"SUCCESS",newbackups:newPluginBackups});
+            }else{
+                res.send({status:"FILE DOESN'T EXIST: "+fullPath});
+            }
+        });
+
+        router.post("/delete_backup_plugins", (req, res) => {
+            let backupName = req.body.backupName;
+            let backupDir = path.join(backendDir, "backup", "plugins");
+            let fullPath = path.join(backupDir, backupName);
+
+            if(fs.existsSync(fullPath)){
+                fs.rmSync(fullPath);
+                let newPluginBackups = fs.readdirSync(path.join(backendDir, "backup", "plugins"));
+                console.log("BACKUP DELETED: "+backupName);
+                res.send({status:"SUCCESS",newbackups:newPluginBackups});
+            }else{
+                res.send({status:"FILE DOESN'T EXIST: "+fullPath});
+            }
+        })
+
+        router.post("/restore_settings", async(req, res) => {
+            let fileName = null;
+            let selections = req.body.selections;
+            if(!fs.existsSync(backendDir+"/tmp")){
+                fs.mkdirSync(backendDir+"/tmp");
+            }
+
+            if(req.files){
+                fileName = req.files.file.name;
+                if(fs.existsSync(path.join(backendDir, "tmp", fileName))){
+                    await fs.rm(path.join(backendDir, "tmp", fileName));
+                }
+                await req.files.file.mv(path.join(backendDir, "tmp", fileName));
+
+            }else if(req.body.backupName){
+                fileName = req.body.backupName;
+                if(fs.existsSync(path.join(backendDir, "tmp", fileName))){
+                    await fs.rm(path.join(backendDir, "tmp", fileName));
+                }
+                fs.copySync(path.join(backendDir, "backup", "settings", fileName), path.join(backendDir, "tmp", fileName), {overwrite:true});
+            }
+
+            let fileDir = path.join(backendDir, "tmp", fileName.split(".")[0]);
+
+            if(fs.existsSync(fileDir)){
+                await fs.rm(fileDir, {recursive:true});
+            }
+
+            let zip = new AdmZip(path.join(backendDir, "tmp", fileName));
+            zip.extractAllTo(fileDir);
+            
+            for(let s in selections){
+                console.log("CHECKING", s+".json");
+                if(selections[s] == true){
+                    if(fs.existsSync(path.join(fileDir, s+".json"))){
+                        console.log("OVERWRITE "+s+".json");
+                        fs.copySync(path.join(fileDir, s+".json"), path.join(backendDir, "settings", s+".json"), {overwrite:true});
+                    }else{
+                        console.log(path.join(fileDir, s+".json"),"NOT FOUND");
+                    }
+                }
+            }
+
+            if(fs.existsSync(fileDir)){
+                await fs.rm(fileDir, {recursive:true});
+            }
+
+            if(fs.existsSync(path.join(backendDir, "tmp", fileName))){
+                await fs.rm(path.join(backendDir, "tmp", fileName));
+            }
+
+            let newPluginBackups = fs.readdirSync(path.join(backendDir, "backup", "settings"));
+            console.log("COMPLETE");
+            res.send({status:"SUCCESS",newbackups:newPluginBackups});
+        });
+
+        router.post("/restore_plugins", async(req, res) => {
+            let fileName = null;
+            let selections = req.body.selections;
+            if(!fs.existsSync(backendDir+"/tmp")){
+                fs.mkdirSync(backendDir+"/tmp");
+            }
+
+            if(req.files){
+                fileName = req.files.file.name;
+                if(fs.existsSync(path.join(backendDir, "tmp", fileName))){
+                    await fs.rm(path.join(backendDir, "tmp", fileName));
+                }
+                await req.files.file.mv(path.join(backendDir, "tmp", fileName));
+
+            }else if(req.body.backupName){
+                fileName = req.body.backupName;
+                if(fs.existsSync(path.join(backendDir, "tmp", fileName))){
+                    await fs.rm(path.join(backendDir, "tmp", fileName));
+                }
+                fs.copySync(path.join(backendDir, "backup", "plugins", fileName), path.join(backendDir, "tmp", fileName), {overwrite:true});
+            }
+
+            let fileDir = path.join(backendDir, "tmp", fileName.split(".")[0]);
+
+            console.log("GET BACKUP", fileName, fileDir);
+
+            if(fs.existsSync(fileDir)){
+                await fs.rm(fileDir, {recursive:true});
+            }
+
+            let zip = new AdmZip(path.join(backendDir, "tmp", fileName));
+            zip.extractAllTo(fileDir);
+
+            let pluginList = fs.readdirSync(path.join(fileDir, "plugins"));
+            console.log("Deleting Plugins...");
+            fs.rmSync(path.join(backendDir, "plugins"),{recursive:true});
+            fs.mkdirSync(path.join(backendDir, "plugins"));
+
+            console.log("Copying Plugins...");
+            for(let p in pluginList){
+                console.log(pluginList[p]);
+                fs.copySync(path.join(fileDir, "plugins", pluginList[p]), path.join(backendDir, "plugins", pluginList[p]));
+            }
+
+            let webfolders = fs.readdirSync(path.join(backendDir, "web"));
+            console.log("Deleting Web Folders...");
+            for(let w in webfolders){
+                if(webfolders[w] != "mod"){
+                    
+                    fs.rmSync(path.join(backendDir, "web", webfolders[w]), {recursive:true});
+                }
+            }
+
+            let newWebFolders = fs.readdirSync(path.join(fileDir, "web"));
+            console.log("Copying Web Folders...");
+            for(let w in newWebFolders){
+                if(newWebFolders[w] != "mod"){
+                    console.log(newWebFolders[w])
+                    fs.copySync(path.join(fileDir, "web", newWebFolders[w]),
+                    path.join(backendDir, "web", newWebFolders[w]));
+                }
+            }
+            console.log("Cleaning up...")
+            if(fs.existsSync(fileDir)){
+                await fs.rm(fileDir, {recursive:true});
+            }
+
+            if(fs.existsSync(path.join(backendDir, "tmp", fileName))){
+                await fs.rm(path.join(backendDir, "tmp", fileName));
+            }
+            getPlugins();
+            let newPluginBackups = fs.readdirSync(path.join(backendDir, "backup", "plugins"));
+            console.log("COMPLETE");
+            res.send({status:"SUCCESS",newbackups:newPluginBackups});
+        });
 
         router.post("/refresh_plugins", async (req, res) => {
             getPlugins();
@@ -527,13 +818,15 @@ class WebUI {
 
                 let overlayDir = path.join(backendDir, "web", "overlay", a);
                 let utilityDir = path.join(backendDir, "web", "utility", a);
+                let settingsDir = path.join(backendDir, "web", "settings", a);
                 pluginPacks[a] = {
                     "settings":thisPlugin,
                     "settings-form":thisPluginForm,
                     "assets":thisPluginAssets,
                     "path":thisPluginPath,
                     "hasOverlay": fs.existsSync(overlayDir),
-                    "hasUtility": fs.existsSync(utilityDir)
+                    "hasUtility": fs.existsSync(utilityDir),
+                    "hasExternalSettingsPage":fs.existsSync(settingsDir)
                 };
             }
             
@@ -555,15 +848,21 @@ class WebUI {
             let plugin = {};
             let a = req.params['0'];
             let thisPlugin = fs.readFileSync(backendDir+"/plugins/"+a+"/settings.json", {encoding:'utf8'});
-            let thisPluginForm = fs.readFileSync(backendDir+"/plugins/"+a+"/settings-form.json", {encoding:'utf8'});
             let thisPluginIcon = backendDir+"/overlay/"+a+"/icon.png";
-            plugin[a] = {
-                "settings":thisPlugin,
-                "settings-form":thisPluginForm,
+
+            let assetDir = path.join(backendDir, "web", "overlay", a, "assets");
+                
+            let thisPluginAssets = fs.existsSync(assetDir)==true ?
+                                fs.readdirSync(assetDir):null;
+
+            plugin = {
+                "settings":JSON.parse(thisPlugin),
+                "assets":thisPluginAssets,
+                "udpClients":sconfig.network["udp_clients"],
                 "icon":thisPluginIcon
             }
             
-            res.send(JSON.stringify(plugin));
+            res.send(plugin);
         });
 
         router.get("/get_eventsub", async(req,res) => {
@@ -593,6 +892,12 @@ class WebUI {
         router.get("/get_channelpoint_rewards", async(req, res) => {
             
             await getBroadcasterID();
+            await this.validateBroadcaster();
+
+            if(broadcasterUserID == 0){
+                res.send({status:"NO BROADCASTER USER ID"});
+                return;
+            }
 
             await Axios({
                 url: 'https://api.twitch.tv/helix/channel_points/custom_rewards?broadcaster_id='+broadcasterUserID,
@@ -647,7 +952,7 @@ class WebUI {
         });
 
         router.get("/chat_restart", async(req, res) => {
-            restartChat();
+            restartChat("restart");
             res.send(JSON.stringify({status:"SUCCESS"}));
         })
 
@@ -828,7 +1133,7 @@ class WebUI {
                         
                         if(type == "channel.raid"){
                             await getBroadcasterID();
-                            let raidType = "channel.raid";
+                            
                             if(event.to_broadcaster_user_id == broadcasterUserID){
                                 event.raidType = "receive";
                             }else if(event.from_broadcaster_user_id == broadcasterUserID){
@@ -852,10 +1157,12 @@ class WebUI {
 
                 if(eventsubs.events[type].plugin != null){
                     if(eventsubs.events[type].plugin.enabled){
-                        if(typeof activePlugins[eventsubs.events[type].plugin.pluginname].onEvent == "undefined"){
-                            console.log("NO ONEVENT FUNCTION FOUND ON "+eventsubs.events[type].plugin.pluginname);
-                        }else{
-                            activePlugins[eventsubs.events[type].plugin.pluginname].onEvent(type, event);
+                        if(activePlugins[eventsubs.events[type].plugin.pluginname] != null){
+                            if(typeof activePlugins[eventsubs.events[type].plugin.pluginname].onEvent == "undefined"){
+                                console.log("NO ONEVENT FUNCTION FOUND ON "+eventsubs.events[type].plugin.pluginname);
+                            }else{
+                                activePlugins[eventsubs.events[type].plugin.pluginname].onEvent(eventsubs.events[type].plugin.eventname, event);
+                            }
                         }
                     }
                 }
@@ -863,25 +1170,28 @@ class WebUI {
 
             if(type == "channel.channel_points_custom_reward_redemption.add"){
 
-                if(event.status == "fulfilled"){
-                    for(let e in events){
-                        if(events[e].triggers.redemption.enabled
-                            && events[e].triggers.redemption.id == event.reward.id){
+                for(let e in events){
+                    if(events[e].triggers.redemption.enabled
+                        && events[e].triggers.redemption.id == event.reward.id){
+                            if(event.status == "fulfilled" || events[e].triggers.redemption.override == true){
                                 runCommands(event, e);
                             }
-                    }
+                        }
                 }
 
             }else if(type == "channel.channel_points_custom_reward_redemption.update"){
-                if(event.status == "fulfilled"){
-                    for(let e in events){
-                        if(events[e].triggers.redemption.enabled
-                            && events[e].triggers.redemption.id == event.reward.id){
+
+                for(let e in events){
+                    if(events[e].triggers.redemption.enabled
+                        && events[e].triggers.redemption.id == event.reward.id
+                        && events[e].triggers.redemption.override == false){
+                            if(event.status == "fulfilled"){
                                 runCommands(event, e);
+                            }else{
+                                sayInChat(event.user_name+" Sorry, the "+event.reward.title+" is a no go.");
                             }
-                    }
-                }else{
-                    sayInChat(event.user_name+" Sorry, the "+event.reward.title+" is a no go.");
+                            
+                        }
                 }
             }
 
@@ -917,8 +1227,46 @@ class WebUI {
         async function getAppToken(){
             if(appToken == ""){
 
-                var twitchScopes = fs.readFileSync("./twitch_scopes.json",{encoding:'utf8'});
-                twitchScopes = JSON.parse(twitchScopes);
+                var twitchScopes = {
+                    "channel.update":"",
+                    "channel.follow":"",
+                    "channel.subscribe":"channel:read:subscriptions",
+                    "channel.subscription.end":"channel:read:subscriptions",
+                    "channel.subscription.gift":"channel:read:subscriptions",
+                    "channel.subscription.message":"channel:read:subscriptions",
+                    "channel.cheer":"bits:read",
+                    "channel.raid":"",
+                    "channel.ban":"channel:moderate",
+                    "channel.unban":"channel:moderate",
+                    "channel.moderator.add":"moderation:read",
+                    "channel.moderator.remove":"moderation:read",
+                    "channel.channel_points_custom_reward.add":"channel:read:redemptions",
+                    "channel.channel_points_custom_reward.update":"channel:read:redemptions",
+                    "channel.channel_points_custom_reward.remove":"channel:read:redemptions",
+                    "channel.channel_points_custom_reward_redemption.add":"channel:read:redemptions",
+                    "channel.channel_points_custom_reward_redemption.update":"channel:read:redemptions",
+                    "channel.poll.begin":"channel:read:polls",
+                    "channel.poll.progress":"channel:read:polls",
+                    "channel.poll.end":"channel:read:polls",
+                    "channel.prediction.begin":"channel:read:predictions",
+                    "channel.prediction.progress":"channel:read:predictions",
+                    "channel.prediction.lock":"channel:read:predictions",
+                    "channel.prediction.end":"channel:read:predictions",
+                    "drop.entitlement.grant":"",
+                    "extension.bits_transaction.create":"",
+                    "channel.goal.begin":"channel:read:goals",
+                    "channel.goal.progress":"channel:read:goals",
+                    "channel.goal.end":"channel:read:goals",
+                    "channel.hype_train.begin":"channel:read:hype_train",
+                    "channel.hype_train.progress":"channel:read:hype_train",
+                    "channel.hype_train.end":"channel:read:hype_train",
+                    "stream.online":"",
+                    "stream.offline":"",
+                    "user.authorization.grant":"",
+                    "user.authorization.revoke":"",
+                    "user.update":""
+                };
+                
                 let scopeString = "";
                 for(let t in twitchScopes){
                     if(twitchScopes[t] == ""){continue;}
@@ -1002,6 +1350,9 @@ class WebUI {
                 activePlugins[dirent.name] = new (require(backendDir+'/plugins/'+dirent.name))();
                 if(fs.existsSync(backendDir+"/plugins/"+dirent.name+"/settings.json")){
                     activePlugins[dirent.name].settings = JSON.parse(fs.readFileSync(backendDir+"/plugins/"+dirent.name+"/settings.json",{encoding:'utf8'}));
+                    if(activePlugins[dirent.name].onSettings != null){
+                        activePlugins[dirent.name].onSettings(activePlugins[dirent.name].settings);
+                    }
                 }
               }
             } catch (err) {
@@ -1159,6 +1510,28 @@ class WebUI {
 			
 			return;
 		});
+	}
+
+    async validateChatbot(){
+		return new Promise((res, rej)=>{
+            Axios({
+                url: 'https://id.twitch.tv/oauth2/validate',
+                method: 'get',
+                headers:{
+                    "Authorization": "Bearer "+oauth.token
+                }
+            })
+            .then((response)=>{
+                
+                console.log("Validated Chatbot: "+response.data.login+"!");
+                res();
+            }).catch(error=>{
+                console.error("ERROR",error);
+                if(error.response?.status == 401){
+                    this.onAuthenticationFailure().then(token=>res(token));
+                }
+            });
+        })
 	}
 }
 

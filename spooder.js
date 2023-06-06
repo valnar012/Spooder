@@ -2,7 +2,7 @@ const Initializer = require("./backend/Spooder_Modules/Init.js");
 const WebUI = require("./backend/Spooder_Modules/WebUI.js");
 const SOSC = require("./backend/Spooder_Modules/OSC.js");
 
-var devMode = process.argv.length>2?process.argv[2] == "-d":false;
+global.devMode = process.argv.length>2?process.argv[2] == "-d":false;
 var initMode = process.argv.length>2?process.argv[2] == "-i":false;
 var noAutoLogin = process.argv.length>2?process.argv[2] == "-a":false;
 
@@ -12,6 +12,7 @@ var spooderLog = (...content) => {
 
 global.maintainenceMode = process.argv.length>2?process.argv[2] == "-e":false;
 
+global.rootDir = __dirname;
 global.backendDir = __dirname+"/backend";
 global.frontendDir = __dirname+"/webui";
 
@@ -61,6 +62,8 @@ global.themes = {
 	},
 	modui:{}
 };
+global.eventstorage = {};
+global.shares = {};
 
 global.refreshFiles = () => {
 
@@ -71,15 +74,13 @@ global.refreshFiles = () => {
 		"eventsubs":"eventsub.json",
 		"modData":"mod.json",
 		"osctunnels":"osc-tunnels.json",
-		"themes":"themes.json"
+		"themes":"themes.json",
+		"eventstorage":"eventstorage.json",
+		"shares":"shares.json"
 	};
 
 	for(let s in settingsFiles){
 		try{
-			if(!fs.existsSync(backendDir+"/settings/"+settingsFiles[s])){
-				spooderLog("Can't find "+settingsFiles[s]);
-				return;
-			}
 			var settingFile = fs.readFileSync(backendDir+"/settings/"+settingsFiles[s],{encoding:'utf8'});
 			switch(s){
 				case "events":
@@ -94,8 +95,48 @@ global.refreshFiles = () => {
 			spooderLog("Got "+settingsFiles[s]);
 			
 		}catch(e){
-			console.error(e);
-			console.error("There's a problem with the "+s+" file.");
+			
+			if(e.code == "ENOENT"){
+				let newFile = {};
+				if(s == "events"){
+					newFile = {events:{}, groups:["Default"]};
+				}else if(s == "modData"){
+					newFile = {
+						"trusted_users": {},
+						"trusted_users_pw": {}
+					};
+				}else if(s == "themes"){
+					newFile = {
+						webui:{},
+						"spooderpet": {
+							"bigeyeleft": "o",
+							"bigeyeright": "o",
+							"littleeyeleft": "\u00ba",
+							"littleeyeright": "\u00ba",
+							"fangleft": " ",
+							"fangright": " ",
+							"mouth": "\u03c9",
+							"colors": {
+								"bigeyeleft": "white",
+								"bigeyeright": "white",
+								"littleeyeleft": "white",
+								"littleeyeright": "white",
+								"fangleft": "white",
+								"fangright": "white",
+								"mouth": "white"
+							}
+						},
+						modui:{}
+					};
+				}
+				fs.writeFile(backendDir+"/settings/"+settingsFiles[s], JSON.stringify(newFile), "utf-8", 
+				(err, data)=>{
+					spooderLog(settingsFiles[s]+" not found. New file created.");
+				});
+			}else{
+				console.error(e);
+				console.error("There's a problem with the "+s+" file.");
+			}
 		}
 
 		if(oauth['client-id'] == "editme" || oauth['client-secret'] == "editme" ||
@@ -123,6 +164,10 @@ global.refreshFiles = () => {
 			
 		}
 	}
+}
+
+global.saveEventStorage = () => {
+	fs.writeFileSync(backendDir+"/settings/eventstorage.json", JSON.stringify(eventstorage), "utf-8");
 }
 
 global.logEffects = (effect) => {
@@ -179,21 +224,20 @@ if(initMode){
 	global.udpClients = sconfig.network["udp_clients"];
 	global.activePlugins = {};
 
-	global.sosc = new SOSC();
-	global.sendToTCP = (address, oscValue, log)=>{sosc.sendToTCP(address, oscValue, log)};
-	global.sendToUDP = (dest, address, oscValue)=>{sosc.sendToUDP(dest, address, oscValue)};
-
-	const Discord = require("./backend/Spooder_Modules/Discord.js");
-	const Twitch = require("./backend/Spooder_Modules/Twitch.js");
+	const Discord = require("./backend/Spooder_Modules/Discord");
+	const Twitch = require("./backend/Spooder_Modules/Twitch");
+	const OBS = require("./backend/Spooder_Modules/OBSOSC");
 
 	global.webUI = new WebUI();
 	
-	let webRouter = webUI.startServer(devMode);
-	global.twitch = new Twitch(webRouter);
-	global.discord = new Discord(webRouter);
+	webUI.startServer(devMode);
+	global.twitch = new Twitch(webUI.router, webUI.publicRouter);
+	global.discord = new Discord(webUI.router);
+	global.obs = new OBS(webUI.router);
 	webUI.onNgrokStart = function(){
 		twitch.refreshEventSubs();
-		if(discord.loggedIn && discord.config.autosendngrok?.enabled){
+		
+		if(discord.loggedIn && discord.config?.autosendngrok.enabled){
 			spooderLog("SENDING NGROK TO MODS");
 			discord.sendToChannel(discord.config.autosendngrok.destguild, discord.config.autosendngrok.destchannel, sconfig.network.external_http_url+"/mod");
 		}
@@ -202,12 +246,16 @@ if(initMode){
 	
 	startServices();
 	async function startServices(){
+		global.sosc = new SOSC();
+		global.sendToTCP = (address, oscValue, log)=>{sosc.sendToTCP(address, oscValue, log)};
+		global.sendToUDP = (dest, address, oscValue)=>{sosc.sendToUDP(dest, address, oscValue)};
 		if(!noAutoLogin){
-			await twitch.autoLogin().catch(e=>{});
+			twitch.autoLogin().catch(e=>{});
+			
+        	obs.autoLogin().catch(e=>{});
 			await discord.autoLogin().catch(e=>{});
 		}
 		
-	
 		if(sconfig.network.externalhandle == "ngrok" && sconfig.network.ngrokauthtoken != ""){
 			webUI.startNgrok();
 		}
@@ -341,12 +389,12 @@ if(initMode){
 	}*/
 
 	global.callOBS = async (command, data) => {
-		if(sosc.obs.connected == false){
+		if(obs.connected == false){
 			spooderLog("OBS NOT CONNECTED");
 			return;
 		}
 
-		return sosc.obs.call(command,data);
+		return obs.call(command,data);
 	}
 
 	function convertDuration(numSeconds){
@@ -363,17 +411,142 @@ if(initMode){
 		return timeAmount+" "+timeTerm;
 	}
 
+	function matchConditions(a, b){
+				
+		if(a.includes("|")){
+			let cSplitOR = a.split("|");
+			//console.log(cSplitOR);
+			for(let c in cSplitOR){
+				if(cSplitOR[c].startsWith(">")){
+			
+					if(b.startsWith(cSplitOR[c].replace(">", ""))){
+						return b;
+					}
+				}else if(cSplitOR[c].startsWith("<")){
+					if(b.endsWith(cSplitOR[c].replace("<", ""))){
+						return b;
+					}
+				}else if(cSplitOR[c].toLowerCase() == b.toLowerCase()){
+					return b;
+				}
+			}
+			return false;
+		}else if(a.startsWith(">")){
+			
+			if(b.startsWith(a.replace(">", ""))){
+				return b;
+			}else{
+				return false;
+			}
+		}else if(a.startsWith("<")){
+			if(b.endsWith(a.replace("<", ""))){
+				return b;
+			}else{
+				return false;
+			}
+		}else if(a.toLowerCase() == b.toLowerCase()){return b;}
+		else{
+			return false;
+		}
+	}
+
+	global.checkResponseTrigger = (eventData, message) => {
+		let searchMode = eventData.triggers.chat.search?true:eventData.triggers.osc.handletype=="search"?true:false;
+		let command = null;
+			if(message.eventType == "osc"){
+				command = eventData.triggers.osc.value.toLowerCase();
+			}else{
+				command = eventData.triggers.chat.command.toLowerCase();
+			}
+		if(searchMode == true){
+			
+			let commandSplit = command.split(" ");
+			let commandMatch = new Array(commandSplit.length).fill(false);
+			let messageSplit = message.message.toLowerCase().replaceAll(/[\p{P}\p{S}]/gu, "").split(" ");
+			let matchIndex = 0;
+			let startInd = 0;
+			for(let m=0; m<messageSplit.length; m++){
+				if(commandSplit[matchIndex] == "*"){commandMatch[matchIndex] = messageSplit[m];}
+				else if(commandSplit[matchIndex].startsWith("*")){
+					
+					for(let n=m; n<messageSplit.length; n++){
+						if(matchConditions(commandSplit[matchIndex].substr(1), messageSplit[n]) != false){
+							commandMatch[matchIndex] = messageSplit[n];
+							
+							m = n;
+							break;
+						}
+					}
+				}else{
+					commandMatch[matchIndex] = matchConditions(commandSplit[matchIndex], messageSplit[m]);
+				}
+				
+				if(commandMatch[matchIndex] != false){
+					if(matchIndex == 0){startInd = m;}
+					matchIndex++;
+					
+					if(matchIndex == commandMatch.length){
+						console.log("FINISH",commandMatch);
+						break;
+					}
+				}else{
+					//console.log(commandMatch, m, startInd);
+					if(matchIndex > 0){
+						m = startInd;
+					}
+					
+					matchIndex = 0;
+					commandMatch = new Array(commandSplit.length).fill(false);
+				}
+				
+			}
+			
+			if(matchIndex == commandMatch.length){
+				return {
+					message:message,
+					extra:commandMatch
+				};
+			}
+		}else{
+			if(message.message.toLowerCase().startsWith(command)){
+				return {
+					message:message,
+					extra:null
+				};
+			}
+		}
+		return null;
+	}
+
+	global.verifyResponseScript = async (message, extra, script) => {
+		try{
+			let responseFunct = await eval("async () => { let event = "+JSON.stringify(message)+"; let extra = "+JSON.stringify(extra)+"; "
+															+"let eventstorage = "+JSON.stringify(eventstorage)+"; "
+															+script.replace(/\n/g, "")+"}");
+			let response = await responseFunct();
+			return {
+				status:"ok",
+				response:response
+			};
+		}catch(e){
+			return {
+				status:"error",
+				response:e
+			}
+		}
+	}
+
 	global.runCommands = (eventData, eventName, extra) => {
-		
-		let isChat = eventData.message!=null;
-		let isReward = eventData.user_name!=null;
-		let isOSC = eventData.address!=null;
+		//console.log("RUNNING COMMANDS", eventData);
+		let isChat = eventData.eventType.includes("chat");
+		let isReward = eventData.eventType.includes("redeem");
+		let isOSC = eventData.eventType.includes("osc");
 		if(isReward){
 			eventData.username = eventData.user_name.toLowerCase();
 			eventData.displayName = eventData.user_name;
 		}else if(isOSC){
-			eventData.username = username;
-			eventData.displayName = username;
+			eventData.username = botUsername;
+			eventData.displayName = botUsername;
 		}
 
 		eventData.user_name = eventData.username;
@@ -415,37 +588,51 @@ if(initMode){
 		}
 		
 		if(isChat && event.chatnotification == true){
-			sayInChat(eventData.username+" has activated "+event.name+"!");
+			sayInChat(eventData.displayName+" has activated "+event.name+"!", eventData.channel);
 			sendToTCP("/events/start/"+eventName, eventData.username+" has activated "+event.name+"!");
 			createTimeout(eventName, null, "event", function(){
 				sayInChat(event.name+" has been deactivated!");
 				sendToTCP("/events/end/"+eventName, event.name+" has been deactivated!");
 			}, event.cooldown);
-		}else if(isChat){
-			createTimeout(eventName, null, "event", function(){
-			}, event.cooldown);
+		}else if(isChat || isOSC){
+			if(event.cooldown != 0){
+				createTimeout(eventName, null, "event", function(){
+				}, event.cooldown);
+			}
 		}
 
 		for(let c in event.commands){
 			let eCommand = event.commands[c];
 			let commandDuration = parseFloat(eCommand.duration);
 			
+			let thisCommand = null;
 			switch(eCommand.type){
 				case 'response':
-					
-					setTimeout(async () =>{
+					thisCommand = async () =>{
 						try{
-							let responseFunct = await eval("async () => { let event = "+JSON.stringify(eventData)+"; let extra = "+JSON.stringify(extra)+"; "+eCommand.message.replace(/\n/g, "")+"}");
+							if(eventstorage.eventName == null){
+								eventstorage.eventName = {};
+							}
+							
+							let responseFunct = await eval("async () => { let event = "+JSON.stringify(eventData)+"; let extra = "+JSON.stringify(extra)+"; "
+														+eCommand.message.replace(/\n/g, "")+"}");
 							let response = await responseFunct();
-							sayInChat(response);
+							sayInChat(response, eventData.channel);
+							
 						}catch(e){
 							spooderLog("Failed to run response script. Check the event settings to verify it.", e)
 						}
 						
-					}, eCommand.delay);
+					}
+					if(eCommand.delay == 0){
+						thisCommand();
+					}else{
+						setTimeout(thisCommand, eCommand.delay);
+					}
+					
 				break;
 				case 'plugin':
-					setTimeout(() => {
+					thisCommand = () => {
 						if(activePlugins[eCommand.pluginname] != null){
 							if(typeof activePlugins[eCommand.pluginname].onEvent == "undefined"){
 								spooderLog(activePlugins[eCommand.pluginname], "onEvent() NOT FOUND");
@@ -453,12 +640,21 @@ if(initMode){
 							}
 						}
 						eventData.eventInfo = event;
-						activePlugins[eCommand.pluginname].onEvent(eCommand.eventname, eventData);
-					}, eCommand.delay);
+						if(activePlugins[eCommand.pluginname]?.onEvent != null){
+							activePlugins[eCommand.pluginname].onEvent(eCommand.eventname, eventData);
+						}
+					};
+
+					if(eCommand.delay == 0){
+						thisCommand();
+					}else{
+						setTimeout(thisCommand, eCommand.delay);
+					}
 					
 				break;
 				case 'software':
-					setTimeout(() => {
+					
+					thisCommand = () => {
 						if(eCommand.etype == "timed"){
 							
 							let commandArgs = null;
@@ -497,6 +693,7 @@ if(initMode){
 									}
 								}
 							}
+							
 							if(!commandUsed){
 								sendToUDP(eCommand.dest_udp, eCommand.address, eCommand.valueOn);
 							}
@@ -529,21 +726,30 @@ if(initMode){
 								
 							}, commandDuration);
 								
-						}else if(eCommand.etype == "oneshot"){
+						}else if(eCommand.etype == "button-press"){
 							sendToUDP(eCommand.dest_udp, eCommand.address, eCommand.valueOn);
 							setTimeout(function(){
 								sendToUDP(eCommand.dest_udp, eCommand.address, eCommand.valueOff);
 							}, 500);
+						}else if(eCommand.etype == "oneshot"){
+							sendToUDP(eCommand.dest_udp, eCommand.address, eCommand.valueOn);
 						}
-					}, eCommand.delay);
+					};
+
+					if(eCommand.delay == 0){
+						thisCommand();
+					}else{
+						setTimeout(thisCommand, eCommand.delay);
+					}
 					
 				break;
 				case "obs":
-					if(sosc.obs.connected == false){
+					if(obs.connected == false){
 						spooderLog("OBS NOT CONNECTED");
 						break;
 					}
-					setTimeout(()=>{
+					
+					thisCommand = ()=>{
 						if(eCommand.function == "setinputmute"){
 							if(eCommand.etype == "timed"){
 								
@@ -576,26 +782,32 @@ if(initMode){
 								callOBS("SetSceneItemEnabled", {sceneName:eCommand.scene, sceneItemId:parseInt(eCommand.item), sceneItemEnabled:eCommand.valueOn==1});
 							}
 						}
-					}, eCommand.delay);
+					};
+
+					if(eCommand.delay == 0){
+						thisCommand();
+					}else{
+						setTimeout(thisCommand, eCommand.delay);
+					}
 				break;
 				case "mod":
-					setTimeout(()=>{
+					thisCommand = ()=>{
 						if(eCommand.function == "lock"){
 							if(eCommand.targettype == "all"){
 								
 								if(eCommand.etype == "toggle"){
-									modlocks.lockdown = modlocks.lockdown==0?1:0;
-									lockEvent(username, modlocks.lockdown==0?"lock":"unlock", "all");
-									lockPlugin(username, modlocks.lockdown==0?"lock":"unlock", "all");
-									sayInChat(modlocks.lockdown==0?"Lockdown initiated! All commands are blocked.":"Lockdown lifted!");
+									modlocks.lockdown = modlocks.lockdown==1?0:1;
+									lockEvent(botUsername, modlocks.lockdown==1?"unlock":"lock", "all");
+									lockPlugin(botUsername, modlocks.lockdown==1?"unlock":"lock", "all");
+									sayInChat(modlocks.lockdown==0?"Lockdown initiated! All commands are blocked.":"Lockdown lifted!", eventData.channel);
 								}else if(eCommand.etype == "timed"){
 									modlocks.lockdown = 1;
-									lockEvent(username, "lock", "all");
-									lockPlugin(username, "lock", "all");
-									sayInChat("Lockdown initiated for "+convertDuration(commandDuration)+"! All commands are blocked until then.");
+									lockEvent(botUsername, "lock", "all");
+									lockPlugin(botUsername, "lock", "all");
+									sayInChat("Lockdown initiated for "+convertDuration(commandDuration)+"! All commands are blocked until then.", eventData.channel);
 									createTimeout(eventName, eCommand, eCommand.type, function(){
-										lockEvent(username, "unlock", "all");
-										lockPlugin(username, "unlock", "all");
+										lockEvent(botUsername, "unlock", "all");
+										lockPlugin(botUsername, "unlock", "all");
 										sayInChat("Lockdown lifted!");
 									}, commandDuration);
 								}
@@ -603,23 +815,23 @@ if(initMode){
 							}else if(eCommand.targettype == "event"){
 								
 								if(eCommand.etype == "toggle"){
-									lockEvent(username, modlocks.events[eCommand.target]==0?"lock":"unlock", eCommand.target);
+									lockEvent(botUsername, modlocks.events[eCommand.target]==1?"unlock":"lock", eCommand.target);
 								}else if(eCommand.etype == "timed"){
-									lockEvent(username, "lock", eCommand.target);
+									lockEvent(botUsername, "lock", eCommand.target);
 									createTimeout(eventName, eCommand, eCommand.type, function(){
-										lockEvent(username, "unlock", eCommand.target)
+										lockEvent(botUsername, "unlock", eCommand.target)
 									}, commandDuration)
 									
 								}
 							}else if(eCommand.targettype == "plugin"){
 								
 								if(eCommand.etype == "toggle"){
-									lockPlugin(username, modlocks.plugins[eCommand.target]==0?"lock":"unlock", eCommand.target);
+									lockPlugin(botUsername, modlocks.plugins[eCommand.target]==1?"unlock":"lock", eCommand.target);
 								}else if(eCommand.etype == "timed"){
-									lockPlugin(username, "lock", eCommand.target);
+									lockPlugin(botUsername, "lock", eCommand.target);
 									
 									createTimeout(eventName, eCommand, eCommand.type, function(){
-										lockPlugin(username, "unlock", eCommand.target)
+										lockPlugin(botUsername, "unlock", eCommand.target)
 									}, commandDuration)
 								}
 							}
@@ -633,7 +845,12 @@ if(initMode){
 							}
 							
 						}
-					}, eCommand.delay);
+					};
+					if(eCommand.delay == 0){
+						thisCommand();
+					}else{
+						setTimeout(thisCommand, eCommand.delay);
+					}
 				break;
 			}
 		}
